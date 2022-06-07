@@ -6,8 +6,12 @@ from isort import file
 
 from typing import Union, Optional, Tuple, Any
 from datetime import datetime
+import time
 import pickle
 import base64
+
+from requests_cache import disabled
+from functions import *
 
 import numpy as np
 import pandas as pd
@@ -38,25 +42,25 @@ from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error,\
 	ConfusionMatrixDisplay, classification_report, roc_auc_score, f1_score, roc_curve, plot_roc_curve, precision_recall_curve
 from xgboost import XGBClassifier, XGBRegressor
 
-class ColumnDropper(BaseEstimator, TransformerMixin):
-    
-    def __init__(self, columns_to_drop):
-        
-        self.columns_to_drop = columns_to_drop
-        
-    def fit(self, X, y=None):
-        
-        return self 
-
-    def transform(self, X, y=None):
-        
-        return X.drop(columns = self.columns_to_drop)
-
+######################################################
+#                Page Configuration
+######################################################
 # Brownser tab title and icon
 st.set_page_config(
         page_title = 'ML App',
-        page_icon=':potato:'
+        page_icon = ':potato:',
+        menu_items = {
+            'About': '''
+            **Author**: João Baiochi  
+            [Github](https://github.com/baiochi)  
+            [E-mail](mailto:joao.baiochi@outlook.com.br)
+            '''
+        }
 )
+# Session state innit
+#st.session_state
+model_results = None
+
 # Load CSS file
 # For change defaul theme, create config.toml file
 # streamlit config show > ~/.streamlit/config.toml
@@ -67,167 +71,30 @@ st.set_page_config(
 ######################################################
 #                   Main Title
 ######################################################
-st.title('> Machine Learning Playground')
-st.subheader('Modeling examples with `Scikit-Learn` library')
-st.markdown('Author: João Baiochi [:briefcase:](https://github.com/baiochi)', unsafe_allow_html=True)
 
-st.subheader('Workflow guide:')
-st.markdown('- Upload your csv file')
-st.markdown('- Define target')
-st.markdown('- Select ID column to drop, if any')
-st.markdown('- Select train/test size and if will stratify target')
-st.markdown('- Apply feature engineering, if necessary')
-st.markdown('- Choose transformers for numerical data')
-st.markdown('- Choose transformers for numerical data')
-st.markdown('- Select estimator to be used')
-st.markdown('- Run model, and check metrics score')
-
-#st.session_state
-
-######################################################
-#                   Functions
-######################################################
-def read_dataframe(file):
-    # read with pandas
-    df = pd.read_csv(file, encoding='utf-8')
-    # reorders the last column to the second position (target is usually in the first or last column)
-    column_selector = df.columns[:-1].insert(1, df.columns[-1])
-    # optional value in checkbox to drop ID column
-    id_selector = [None] + list(column_selector)
-    return df, column_selector, id_selector
-
-def train_to_test():
-    st.session_state.test_size = 1 - st.session_state.train_size
-def test_to_train():
-    st.session_state.train_size = 1 - st.session_state.test_size
-
-def feature_eng_check(features_creator, cols_to_drop):
-
-	# Check if there is a transformer
-	feat_eng_pipe_params = []
-	if features_creator:
-		feat_eng_pipe_params.append( ('create_surname', features_creator) )
-	if cols_to_drop:
-		feat_eng_pipe_params.append( ('column_dropper', ColumnDropper(cols_to_drop)) )
-	
-	# Has at least 1 transformer
-	if len(feat_eng_pipe_params) > 0:
-		return feat_eng_pipe_params
-	# No transformer was passed
-	else:
-		return False
-
-def apply_feature_engineering(feat_eng_pipe_params, y_train, X_train, X_test):
-
-		print('Applying feature engineering...')
-		feature_eng_pipeline  = Pipeline(feat_eng_pipe_params).fit(X_train, y_train)
-		
-		# Transform features
-		X_train = feature_eng_pipeline.transform(X_train)
-		X_test = feature_eng_pipeline.transform(X_test)
-
-		return X_train, X_test
-
-def create_preprocess_pipeline(X_train, numeric_params, categorical_params):
-    # Define numeric/categorical features
-    numeric_features     = X_train.select_dtypes(include=np.number).columns.tolist()
-    categorical_features = X_train.select_dtypes(exclude=np.number).columns.tolist()
-
-    pipeline = []
-
-    # Create Column transformer with respective parameters
-    if len(numeric_features): # No numerical features on dataframe
-        if categorical_params: # has transformer
-            pipeline.append( ('categorical_transformer', Pipeline(categorical_params) ,categorical_features) )
-            return ColumnTransformer(pipeline)
-    elif len(categorical_features): # No categorical features on dataframe
-        if numeric_params: # has transformer
-            pipeline.append( ('numeric_transformer', Pipeline(numeric_params), numeric_features) )
-            return ColumnTransformer(pipeline)
-    else: # Both types of features and transformers
-        if numeric_params:
-            pipeline.append( ('numeric_transformer', Pipeline(numeric_params), numeric_features) )
-        if categorical_params:
-            pipeline.append( ('categorical_transformer', Pipeline(categorical_params) ,categorical_features) )
-        if len(pipeline):
-            return ColumnTransformer(pipeline)
-    # no transformers
-    return None
-
-def create_pipeline(X, y, pp_pipeline, estimator, default_params={}, random_state=42):
-		
-    start_time =  datetime.now()
-    print(f'Fitting model: ')
-    if pp_pipeline:
-        pipeline = Pipeline([
-            ('pre_processing', pp_pipeline),
-            ('estimator', estimator(**default_params))
-        ])
-    else:
-        pipeline = Pipeline([
-            ('estimator', estimator(**default_params))
-        ])
-
-    pipeline.fit(X, y)
-    end_time = datetime.now()
-    print(f'Time to fit model: ', str(end_time - start_time).split(".")[0])
-
-    return pipeline
-
-def run_model(df:str, target_name:str, estimator:Any, metric_type:str,
-			numeric_pipeline:list[Tuple[str, Any]], categorical_pipeline:list[Tuple[str, Any]], 
-
-			train_size:float=0.8, test_size:float=0.2,
-			estimator_params:dict={}, stratify:bool=False, 
-			eval_df:Optional[str]=None, id_column:Optional[str]=None,
-			features_creator:Optional[Any]=None, cols_to_drop:Optional[list[str]]=None, 
-			plot_metrics:bool=True, save_model:bool=False, submit_file:bool=False, random_state=42):
-
-    # Set Features
-    X = df.drop(columns=target_name) 
-    # Set Target
-    y = df[target_name]				 
-    
-    # Check stratify
-    if stratify: stratify = y
-    else: stratify = None
-
-    # Create split
-    X_train, X_test, y_train, y_test = train_test_split(X, y, 
-                                                    train_size=train_size, 
-                                                    test_size=test_size, 
-                                                    stratify=stratify, 
-                                                    random_state=random_state)
-    print(f'Train dataset size: {X_train.shape}')
-    print(f'Test dataset size: {X_test.shape}')
-
-    # Feature Engineering
-    feat_eng_pipe_params = feature_eng_check(features_creator, cols_to_drop)
-    if feat_eng_pipe_params:
-        X_train, X_test = apply_feature_engineering(feat_eng_pipe_params, y_train, X_train, X_test)
-        
-    # Create Pre-processing Pipeline
-    pre_processing_pipeline = create_preprocess_pipeline(X_train=X_train,
-                                                    numeric_params=numeric_pipeline,
-                                                    categorical_params=categorical_pipeline)
-    # Make pipeline and fit
-    pipeline = create_pipeline(X=X_train, y=y_train, 
-                                pp_pipeline=pre_processing_pipeline, 
-                                estimator=estimator, default_params=estimator_params,
-                                random_state=random_state)
-    
-    # Success
-    return {
-        'pipeline': pipeline,
-        'train_test_split': [X_train, X_test, y_train, y_test]
-    }
-
+guide_placeholder = st.empty()
+with guide_placeholder.container():
+    st.title('> Machine Learning Playground')
+    st.caption('Modeling examples with [`Scikit-Learn`](https://scikit-learn.org/stable/) library')
+    st.subheader('Workflow guide:')
+    st.markdown('''
+        - Upload your csv file  
+        - Define target  
+        - Select ID column to drop, if any  
+        - Select train/test size and if will stratify target  
+        - Apply feature engineering, if necessary  
+        - Choose transformers for numerical data  
+        - Choose transformers for numerical data  
+        - Select estimator to be used  
+        - Run model, and check metrics score  
+    ''')
 
 # Sidebar Configuration
 st.sidebar.header('Start here')
 with st.sidebar.expander('Upload a CSV file', expanded=True):
-    file_upload = st.file_uploader('', type='csv')
-
+    file_upload = st.file_uploader('', type='csv', key='file_loader')
+    if file_upload:
+        guide_placeholder.empty()
 
 ######################################################
 #              Run when file is loaded
@@ -238,7 +105,7 @@ if file_upload:
     df, column_selector, id_selector  = read_dataframe(file_upload)
 
     # Dataframe preview
-    if st.sidebar.checkbox('Show dataframe preview', value=True):
+    if st.sidebar.checkbox('Show dataframe preview', key='data_prev'):
         st.subheader('Dataframe Preview')
         st.dataframe(df.iloc[np.r_[0:3, -3:0]]) # show head and tail
 
@@ -253,6 +120,10 @@ if file_upload:
         id_column = st.selectbox('Choose the ID column to drop', id_selector, key='id_column')
         if id_column:
             df.drop(columns=id_column, inplace=True)
+        # Select to encode target (categorical data)
+        target_encode = st.checkbox(label='Endoce target', 
+                                    help='Use LabelEncode to process categorical values', 
+                                    key='target_encode')
 
     # Train/Test Split parameters
     with st.sidebar.expander('Train/Test Split parameters'):
@@ -336,7 +207,6 @@ if file_upload:
     # Button to run model
     with st.sidebar.form(key='run_model'):
         submitted = st.form_submit_button('Run model')
-        model_results = None
         if submitted:
             model_results = run_model(df=df, 
                         target_name=target, 
@@ -352,34 +222,43 @@ if file_upload:
                         cols_to_drop=cols_to_drop, 
                         plot_metrics=False, save_model=False, submit_file=False, random_state=42)
             st.success('Fit complete!!')
+            time.sleep(2)
+                
+        
+
+# Display model performance after run
+if model_results:
+    # Extract results
+    X_train, X_test, y_train, y_test = model_results['train_test_split']
+    model = model_results['pipeline']
+    # Make predictions
+    y_train_pred = model.predict(X_train)
+    y_test_pred = model.predict(X_test)
+
+    st.header(f'{estimator} Performance')
+    
+    c1, c2 = st.columns(2)
+
+    with c1.container():
+        print_regression_metrics(y_train, y_test, y_train_pred, y_test_pred)
+        #st.text(f'Test R2 score: {r2_score(y_test, y_test_pred):.2f}')
+        #st.text(f'Train R2 score: {r2_score(y_train, y_train_pred):.2f}')
+
+    c2.download_button('Download model', 
+                        data=pickle.dumps(model), 
+                        file_name=f'{estimator}_model_{datetime.now().strftime("%H_%M_%S")}.pkl')
+    c2.download_button('Download metrics', 
+                        data=pickle.dumps(model), 
+                        file_name=f'{estimator}_metrics_{datetime.now().strftime("%H_%M_%S")}.pkl')
     
 
-    # Display model performance after run
-    if model_results:
-
-        # Extract results
-        X_train, X_test, y_train, y_test = model_results['train_test_split']
-        model = model_results['pipeline']
-        # Make predictions
-        y_train_pred = model.predict(X_train)
-        y_test_pred = model.predict(X_test)
-
-        st.header(f'{estimator} Performance')
-        st.text(f'Test R2 score: {r2_score(y_test, y_test_pred):.2f}')
-        st.text(f'Train R2 score: {r2_score(y_train, y_train_pred):.2f}')
-        c1, c2 = st.columns(2)
-        c1.download_button('Download model', 
-                            data=pickle.dumps(model), 
-                            file_name=f'{estimator}_{datetime.now().strftime("%H_%M_%S")}.pkl')
-    
 
 
 
 
 
 
-
-
+#st.session_state
 
 
 def select_dataset():
