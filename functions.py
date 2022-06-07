@@ -30,7 +30,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV, RandomizedSearchCV, cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import MinMaxScaler, PolynomialFeatures, OneHotEncoder, OrdinalEncoder, label_binarize
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, PolynomialFeatures, OneHotEncoder, OrdinalEncoder, label_binarize
 from sklearn.compose import ColumnTransformer
 ## Models
 from sklearn.linear_model import LogisticRegression, SGDClassifier, LinearRegression, ElasticNet
@@ -59,16 +59,6 @@ class ColumnDropper(BaseEstimator, TransformerMixin):
     def transform(self, X, y=None):
         
         return X.drop(columns = self.columns_to_drop)
-
-# Read file from user input
-def read_dataframe(file):
-    # read with pandas
-    df = pd.read_csv(file, encoding='utf-8')
-    # reorders the last column to the second position (target is usually in the first or last column)
-    column_selector = df.columns[:-1].insert(1, df.columns[-1])
-    # optional value in checkbox to drop ID column
-    id_selector = [None] + list(column_selector)
-    return df, column_selector, id_selector
 
 # Control train/test slider
 def train_to_test():
@@ -133,7 +123,7 @@ def create_preprocess_pipeline(X_train, numeric_params, categorical_params):
     return None
 
 # Create final pipeline and fit model
-def create_pipeline(X, y, pp_pipeline, estimator, default_params={}, multi_class=False,random_state=42):
+def create_pipeline(X, y, pp_pipeline, estimator, default_params={}, multi_class=False):
 		
     start_time =  datetime.now()
     print(f'Fitting model: ')
@@ -177,6 +167,9 @@ def run_model(df:str, target_name:str, estimator:Any, metric_type:str,
     if stratify: stratify = y
     else: stratify = None
 
+    # Create target labels
+    target_labels = dict( enumerate(y.astype('category').cat.categories ) )
+
     # Create split
     X_train, X_test, y_train, y_test = train_test_split(X, y, 
                                                     train_size=train_size, 
@@ -195,16 +188,21 @@ def run_model(df:str, target_name:str, estimator:Any, metric_type:str,
     pre_processing_pipeline = create_preprocess_pipeline(X_train=X_train,
                                                     numeric_params=numeric_pipeline,
                                                     categorical_params=categorical_pipeline)
-
-    # Make pipeline and fit
+    # Make pipeline
     pipeline = create_pipeline(X=X_train, y=y_train, 
                             pp_pipeline=pre_processing_pipeline, 
                             estimator=estimator, default_params=estimator_params,
                             multi_class=multi_class,random_state=random_state)
+    # Fit model
+    pipeline.fit(X_train, y_train)
+
     # Success
     return {
         'pipeline': pipeline,
-        'train_test_split': [X_train, X_test, y_train, y_test]
+        'X' : X, 'y' : y,
+        'X_train' : X_train, 'X_test' : X_test, 
+        'y_train' : y_train, 'y_test' : y_test,
+        'target_labels' : target_labels
     }
 
 def print_regression_metrics(y_train, y_test, y_pred_train, y_pred_test):
@@ -220,6 +218,7 @@ def print_regression_metrics(y_train, y_test, y_pred_train, y_pred_test):
 #             Data Engineering Functions
 ######################################################
 
+# Extract a short docstring, all characters between the Parameters and Attributes section
 def get_docstring_params(estimator):
 	# get full docstring
 	doc_string = estimator().__doc__
@@ -236,6 +235,7 @@ def get_docstring_params(estimator):
 	short_docstring = short_docstring.replace('`', '').replace('        -', '').replace('\t', '-')
 	return short_docstring
 
+# Extract all values for params with multiple options
 def get_param_options(estimator):
 	# empty dictionary for only parameters with multiple options
 	opt_param_dict = {}
@@ -258,6 +258,7 @@ def get_param_options(estimator):
 
 	return opt_param_dict
 
+# Returns a dictionary with all parameters set with default options
 def get_default_params(estimator):
 	# get section of parameters from full docstring
 	param_docs = get_docstring_params(estimator)
@@ -284,31 +285,27 @@ def get_default_params(estimator):
 
 	return default_values
 
+
 ######################################################
-#             Machine Learning Functions
+#             Input/Output Functions
 ######################################################
 
-def read_data(dataset, target_name=None):
+# Read sample data
+def read_sample_data(dataset_name):
 
-    if isinstance(dataset, pd.DataFrame) :
-        df = dataset
-
-    elif dataset == 'iris':
-        df = sns.load_dataset('iris')
+    if dataset_name == 'iris':
         target_name = 'species'
-    elif dataset == 'penguins':
-        df = sns.load_dataset('penguins')
+    elif dataset_name == 'penguins':
         target_name = 'species'
-    elif dataset == 'diamonds':
-        df = sns.load_dataset('diamonds')
+    elif dataset_name == 'diamonds':
         target_name = 'cut'
-    elif dataset == 'tips':
-        df = sns.load_dataset('tips')
+    elif dataset_name == 'tips':
         target_name = 'sex'
 
-    return prepare_data(df, target_name)
+    return prepare_sample_data(dataset_name, target_name)
 
-def prepare_data(df, target_name, add_noise=True):
+# Prepare sample data to modeling
+def prepare_sample_data(dataset_name, target_name, add_noise=True):
     """  
     \nPreprocess data\n---\n
     Apply every transformation need in order to fil models, like onehot encoding and fill null values\n
@@ -325,6 +322,10 @@ def prepare_data(df, target_name, add_noise=True):
     >>> X, y, target_labels = prepare_data(df, target_name='species')
     """
 
+    # Read csv with pandas
+    df = pd.read_csv(f'sample_data/' + dataset_name + '.csv')
+
+    # Drop target column
     X = df.drop(target_name, axis=1)
 
     # Add noisy features to make the problem harder
@@ -365,13 +366,28 @@ def prepare_data(df, target_name, add_noise=True):
     results = {
         'X' : X, 'y' : y, 
         'target_labels' : target_labels,
+        'target_name' : target_name,
         'X_train' : X_train, 'X_test' : X_test, 
         'y_train' : y_train, 'y_test' : y_test,
         'df' : df
     }
 
-    return results
+    return results  
 
+# Read file from user input
+def read_upload_file(file):
+    # read with pandas
+    df = pd.read_csv(file, encoding='utf-8')
+    # reorders the last column to the second position (target is usually in the first or last column)
+    column_selector = df.columns[:-1].insert(1, df.columns[-1])
+    return df, column_selector
+
+
+######################################################
+#             Machine Learning Functions
+######################################################
+
+# Generate a Plotly figure to plot Confusion Matrix
 def create_confusion_matrix(y_true, y_pred, target_labels, name):
 
     # Calculate confusion matrix
@@ -403,6 +419,7 @@ def create_confusion_matrix(y_true, y_pred, target_labels, name):
     # Return PX figure to st.plotly_chart()
     return fig
 
+# Generate a Plotly figure to plot ROC curve for binary classification
 def plot_binary_roc_auc(y_true, y_score):
         
     fpr, tpr, _ = roc_curve(y_true, y_score)
@@ -425,6 +442,7 @@ def plot_binary_roc_auc(y_true, y_score):
 
     return fig
 
+# Calculate metrics for multiple classification problem
 def calculate_roc_auc_multiclass(y_true, y_scores, model):
     '''
     Calculate FPR, TPR and ROC AUC score for a multiclass problem\n
@@ -469,6 +487,7 @@ def calculate_roc_auc_multiclass(y_true, y_scores, model):
 
     return fpr, tpr, roc_auc
 
+# Generate a Plotly figure to plot ROC curve for multiclass
 def plot_multiclass_roc_auc(y_true, y_scores, model, target_labels):
 
     # get values
@@ -495,6 +514,8 @@ def plot_multiclass_roc_auc(y_true, y_scores, model, target_labels):
 
     return fig
 
+# This is the 'main metrics' function, which calls all the above
+# Calculate all metrics and figure objects for classification problem (binary/multiclass)
 def calculate_metrics(X, y_true, model, target_labels, split_type):
 
     # Predictions
@@ -528,6 +549,24 @@ def calculate_metrics(X, y_true, model, target_labels, split_type):
     }
     return metrics_results
 
+# Fit model for sample data
+def fit_model(model, X, y):
+    try:
+        # start timerasas
+        start_time =  datetime.now()
+        # fit model
+        model.fit(X, y)
+        # calculate total time
+        end_time = datetime.now()
+        total_time = f'Time to fit: ' + str(end_time - start_time).split(".")[0]
+        st.sidebar.success(total_time)
+
+        return model
+
+    except NotFittedError:
+        not_fitted_error()
+    except (ValueError, TypeError, AttributeError) as error:
+        collapsed_expander_bug()
 
 ######################################################
 #               Rendering Functions
@@ -554,7 +593,121 @@ def show_home_page(home_placeholder):
             - Select hyperparameters
             - Run model, and check metrics score 
         ''')
-# Show estimator params in Sidebar
+
+# Settings to select
+# - Target name
+# - Encode target label
+# - Apply Features Creator
+# - Column ID to drop
+def target_features_settings(column_selector):
+
+    with st.sidebar.expander('Target and Feature Engineering options'):
+        
+        # Select target
+        target_name = st.selectbox('Choose the target variable', column_selector, key='target_name')
+            
+        # Select to encode target (categorical data)
+        target_encode = st.checkbox(label='Encode target', 
+                                    help='Use LabelEncode to process categorical values', 
+                                    key='target_encode')
+
+        # Features Creator
+        fc_check = st.checkbox('Apply FeaturesCreator')
+        if fc_check:
+            feature_creator = st.file_uploader('Upload a FeaturesCreator object', key='features_creator')
+        else:
+            feature_creator = None
+
+        # Columns to drop
+        if st.checkbox('Drop columns'):
+            cols_to_drop = st.multiselect('Select columns to drop', 
+                                        options=list(column_selector).remove(target_name), 
+                                        key='cols_to_drop')
+        else:
+            cols_to_drop = []
+    
+    return {
+        'target_name' : target_name,
+        'target_encode' : target_encode,
+        'fc_check' : fc_check,
+        'feature_creator' : feature_creator,
+        'cols_to_drop' : cols_to_drop
+    }
+
+# Split data into train/test
+# - Select train size
+# - Select test size
+# - Select if stratify target
+def test_train_split():
+
+    # Train/Test Split parameters
+    with st.sidebar.expander('Train/Test Split parameters'):
+        train_size = st.slider('Train size', min_value=0.05, max_value=0.95, on_change=train_to_test, key='train_size')
+        test_size = st.slider('Train size', min_value=0.05, max_value=0.95, on_change=test_to_train, key='test_size')
+        stratify = st.checkbox('Stratify target')
+    
+    return {
+        'train_size' : train_size,
+        'test_size' : test_size,
+        'stratify' : stratify
+    }
+
+# Select transformers for numerical data
+def numerical_transformer():
+
+    with st.sidebar.expander('Transformers for Numerical Features'):
+        numeric_pipeline = []
+        # Numerical Imputer
+        if st.checkbox('Imputer', key='num_imputer'):
+            imputer_strategy = st.selectbox('Select strategy:', options=('mean', 'median', 'most_frequent'))
+            numeric_pipeline.append( ('impute_num', SimpleImputer(strategy=imputer_strategy)) )
+        # Numerical Scaler
+        scaler = st.radio('Scale transformer', options=(None, 'StandardScaler', 'MinMaxScaler'), key='num_scaler')
+        if scaler == 'StandardScaler':
+            numeric_pipeline.append( ('std', StandardScaler()) )
+        elif scaler == 'MinMaxScaler':
+            numeric_pipeline.append( ('mms', MinMaxScaler()) )
+    
+    return {
+        'numeric_pipeline' : numeric_pipeline
+    }
+
+# Select transformers for categorical data
+def categorical_transformer():
+    # Transformers for Categorical Features
+    with st.sidebar.expander('Transformers for Categorical Features'):
+        categorical_pipeline = []
+        # Categorical Imputer
+        if st.checkbox('Imputer', key='cat_imputer'):
+            st.text("Imputer strategy = 'constant'")
+            fill_value = st.text_input(label='fill value', help="default value = 'unknow'")
+            if not fill_value:
+                fill_value = 'unknow'
+            categorical_pipeline.append( ('impute_cat', SimpleImputer(strategy='constant', fill_value=fill_value)) )
+        # Variable Encoding
+        encoder = st.radio('Encoder', options=(None, 'OneHotEncoder', 'OrdinalEncoder'), key='cat_endocer')
+        if encoder == 'OneHotEncoder':
+            categorical_pipeline.append( ('onehot', OneHotEncoder(handle_unknown='ignore')) )
+        elif encoder == 'OrdinalEncoder':
+            categorical_pipeline.append( ('ordinal', OrdinalEncoder()) )
+    
+    return {
+        'categorical_pipeline' : categorical_pipeline
+    }
+
+# Display a summary of all options selected
+def options_summary(target_name, test_size, train_size, stratify, fc_check, cols_to_drop, numeric_pipeline, categorical_pipeline, **kwargs):
+    
+    with st.sidebar.expander('Parameters summary'):
+        st.markdown(f'**Target**: {target_name}')
+        st.markdown(f'**Test/train size**: {test_size:.2f} / {train_size:.2f}')
+        st.markdown(f'**Stratify**: {stratify}')
+        st.markdown(f'**Feature Creator**: {fc_check}')
+        st.markdown(f'**Drop columns**: {", ".join(cols_to_drop)}')
+        st.markdown(f'**Numerical Transformers**: {", ".join([str(transformer[-1]) for  transformer in numeric_pipeline])}')
+        st.markdown(f'**Categorical Transformers**: {", ".join([str(transformer[-1]) for  transformer in categorical_pipeline])}')
+
+# Show estimator parameters to choose in Sidebar
 def configure_estimator_params(estimator):
 
     model_params = {}
@@ -580,25 +733,71 @@ def configure_estimator_params(estimator):
                     model_params[key]=None
     
     return model_params
-# Handling NotFittedError message
-def not_fitted_error():
-    st.markdown('''
-            **Error:** Model is not fitted!  
-            This can happen if you change some settings from sidebar after model is complete.  
-            *Plase run again your model in the sidebar button.*  
-            ''')
-# Handling bug with collapsed expander
-def collapsed_expander_bug():
-    st.markdown('''There is a bug when running some estimators for the first time with the  
-    **"Configure parameters"** expander collapsed. Just open/close the expander and run again.  
-    ''')
+
+# Create full pipeline for uploaded file
+def build_pipeline(df:str, target_name:str, estimator:Any,
+			numeric_pipeline:list[Tuple[str, Any]], categorical_pipeline:list[Tuple[str, Any]], 
+
+			train_size:float=0.8, test_size:float=0.2, target_encode=False,
+			hyper_params:dict={}, stratify:bool=False, multi_class=False,
+			features_creator:Optional[Any]=None, cols_to_drop:Optional[list[str]]=None, 
+			random_state=42, **kwargs):
+
+    # Set Features
+    X = df.drop(columns=target_name) 
+    # Set Target
+    y = df[target_name]				 
+    
+    # Check stratify
+    if stratify: stratify = y
+    else: stratify = None
+
+    # Create target labels
+    target_labels = dict( enumerate(y.astype('category').cat.categories ) )
+
+    # Create split
+    X_train, X_test, y_train, y_test = train_test_split(X, y, 
+                                                    train_size=train_size, 
+                                                    test_size=test_size, 
+                                                    stratify=stratify, 
+                                                    random_state=random_state)
+    print(f'Train dataset size: {X_train.shape}')
+    print(f'Test dataset size: {X_test.shape}')
+
+    # Feature Engineering
+    feat_eng_pipe_params = feature_eng_check(features_creator, cols_to_drop)
+    if feat_eng_pipe_params:
+        X_train, X_test = apply_feature_engineering(feat_eng_pipe_params, y_train, X_train, X_test)
+        
+    # Create Pre-processing Pipeline
+    pre_processing_pipeline = create_preprocess_pipeline(X_train=X_train,
+                                                    numeric_params=numeric_pipeline,
+                                                    categorical_params=categorical_pipeline)
+    # Make pipeline
+    pipeline = create_pipeline(X=X_train, y=y_train, 
+                            pp_pipeline=pre_processing_pipeline, 
+                            estimator=estimator, default_params=hyper_params,
+                            multi_class=multi_class)
+
+    return {
+        'pipeline': pipeline,
+        'X' : X, 'y' : y,
+        'X_train' : X_train, 'X_test' : X_test, 
+        'y_train' : y_train, 'y_test' : y_test,
+        'target_labels' : target_labels
+    }
+
 # Display Metrics summary and plot confusion matrix/roc auc curve
+# This is functions is called to display it's values in a st.column
 def plot_metrics(roc_auc_score_, f1_score_, cf_matrix_fig, roc_curve_fig, **kwargs):
 
+    # Write metrics
     st.text(f'ROC AUC Score = {roc_auc_score_:.3f}')
     st.text(f'F1 Score = {f1_score_:.3f}')
+    # Plot figures
     st.plotly_chart(cf_matrix_fig, use_container_width=True)
     st.plotly_chart(roc_curve_fig, use_container_width=True)
+
 # Main function to calculate and display metrics
 def display_metrics(model, X_train, X_test, y_train, y_test, target_labels,**kwargs):
 
@@ -618,116 +817,20 @@ def display_metrics(model, X_train, X_test, y_train, y_test, target_labels,**kwa
         plot_metrics(**test_metrics)
 
 
+######################################################
+#                      Errors
+######################################################
 
-# # Define Target variable
-# with st.sidebar.expander('Define Target and Features'):
-#     # Select target
-#     target = st.selectbox('Choose the target variable', column_selector, key='target')
-#     # Select column to drop (Optional)
-#     id_selector.remove(target)
-#     id_column = st.selectbox('Choose the ID column to drop', id_selector, key='id_column')
-#     if id_column:
-#         df.drop(columns=id_column, inplace=True)
-#     # Select to encode target (categorical data)
-#     target_encode = st.checkbox(label='Endoce target', 
-#                                 help='Use LabelEncode to process categorical values', 
-#                                 key='target_encode')
+# Handling NotFittedError message
+def not_fitted_error():
+    st.markdown('''
+            **Error:** Model is not fitted!  
+            This can happen if you change some settings from sidebar after model is complete.  
+            *Plase run again your model in the sidebar button.*  
+            ''')
 
-# # Train/Test Split parameters
-# with st.sidebar.expander('Train/Test Split parameters'):
-#     train_size = st.slider('Train size', min_value=0.05, max_value=0.95, on_change=train_to_test, key='train_size')
-#     test_size = st.slider('Train size', min_value=0.05, max_value=0.95, on_change=test_to_train, key='test_size')
-#     stratify = st.checkbox('Stratify target')
-
-# # Feature Engineering
-# with st.sidebar.expander('Feature Engineering'):
-#     fc_check = st.checkbox('Apply FeaturesCreator')
-#     if fc_check:
-#         feature_creator = st.file_uploader('Upload a FeaturesCreator object', key='features_creator')
-#     else:
-#         feature_creator = None
-#     if st.checkbox('Drop columns'):
-#         cols_to_drop = st.multiselect('Select columns to drop', 
-#                                     options=df.drop(columns=target).columns, 
-#                                     key='cols_to_drop')
-#     else:
-#         cols_to_drop = []
-
-# # Transformers for Numerical Features
-# with st.sidebar.expander('Transformers for Numerical Features'):
-#     numeric_pipeline = []
-#     # Numerical Imputer
-#     if st.checkbox('Imputer', key='num_imputer'):
-#         imputer_strategy = st.selectbox('Select strategy:', options=('mean', 'median', 'most_frequent'))
-#         numeric_pipeline.append( ('impute_num', SimpleImputer(strategy=imputer_strategy)) )
-#     # Numerical Scaler
-#     scaler = st.radio('Scale transformer', options=(None, 'StandardScaler', 'MinMaxScaler'), key='num_scaler')
-#     if scaler == 'StandardScaler':
-#         numeric_pipeline.append( ('std', StandardScaler()) )
-#     elif scaler == 'MinMaxScaler':
-#         numeric_pipeline.append( ('mms', MinMaxScaler()) )
-
-# # Transformers for Categorical Features
-# with st.sidebar.expander('Transformers for Categorical Features'):
-#     categorical_pipeline = []
-#     # Categorical Imputer
-#     if st.checkbox('Imputer', key='cat_imputer'):
-#         st.text("Imputer strategy = 'constant'")
-#         fill_value = st.text_input(label='fill value', help="default value = 'unknow'")
-#         if not fill_value:
-#             fill_value = 'unknow'
-#         categorical_pipeline.append( ('impute_cat', SimpleImputer(strategy='constant', fill_value=fill_value)) )
-#     # Variable Encoding
-#     encoder = st.radio('Encoder', options=(None, 'OneHotEncoder', 'OrdinalEncoder'), key='cat_endocer')
-#     if encoder == 'OneHotEncoder':
-#         categorical_pipeline.append( ('onehot', OneHotEncoder(handle_unknown='ignore')) )
-#     elif encoder == 'OrdinalEncoder':
-#         categorical_pipeline.append( ('ordinal', OrdinalEncoder()) )
-
-# Estimator
-# with st.sidebar.expander('Select Estimator'):
-#     learning_type = st.radio('Problem type', options=('Regression', 'Classification'))
-#     if learning_type == 'Regression':
-#         estimator = st.selectbox('Options', options=('LinearRegression',
-#                                             'RandomForestRegressor',
-#                                             'SVR', 
-#                                             'XGBRegressor')
-#                                 )
-#     elif learning_type == 'Classification':
-#         estimator = st.selectbox('Options', options=('LogisticRegression',
-#                                             'RandomForestClassifier',
-#                                             'SVC',
-#                                             'XGBClassifier')
-#                                     )
-
-# # Summary
-# with st.sidebar.expander('Parameters summary'):
-#     st.markdown(f'**Target**: {target}')
-#     st.markdown(f'**Drop ID**: {id_column}')
-#     st.markdown(f'**Test/train size**: {test_size:.2f} / {train_size:.2f}')
-#     st.markdown(f'**Stratify**: {stratify}')
-#     st.markdown(f'**Feature Creator**: {fc_check}')
-#     st.markdown(f'**Drop columns**: {", ".join(cols_to_drop)}')
-#     st.markdown(f'**Numerical Transformers**: {", ".join([str(transformer[-1]) for  transformer in numeric_pipeline])}')
-#     st.markdown(f'**Categorical Transformers**: {", ".join([str(transformer[-1]) for  transformer in categorical_pipeline])}')
-#     st.markdown(f'**Estimator**: {estimator}')
-
-# # Button to run model
-# with st.sidebar.form(key='run_model'):
-#     submitted = st.form_submit_button('Run model')
-#     if submitted:
-#         model_results = run_model(df=df, 
-#                     target_name=target, 
-#                     estimator=eval(estimator), # convert to object
-#                     metric_type=learning_type,
-#                     numeric_pipeline=numeric_pipeline, 
-#                     categorical_pipeline=categorical_pipeline, 
-#                     train_size=train_size, 
-#                     test_size=test_size,
-#                     estimator_params={}, 
-#                     stratify=stratify, 
-#                     features_creator=feature_creator, 
-#                     cols_to_drop=cols_to_drop, 
-#                     plot_metrics=False, save_model=False, submit_file=False, random_state=42)
-#         st.success('Fit complete!!')
-#         time.sleep(2)
+# Handling bug with collapsed expander
+def collapsed_expander_bug():
+    st.markdown('''There is a bug when running some estimators for the first time with the  
+    **"Configure parameters"** expander collapsed. Just open/close the expander and run again.  
+    ''')

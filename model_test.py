@@ -3,12 +3,14 @@
 ######################################################
 
 # Custom functions for this app
+from distutils.command.build import build
 from functions import *
 
 from cmath import exp
 #from msilib.schema import Error
 from tkinter import Button
 from typing import Union, Optional, Tuple, Any
+import os
 
 # Date handling
 from datetime import datetime
@@ -71,18 +73,15 @@ st.set_page_config(page_title='ML Visualizer', page_icon='📈',layout='wide')
 
 #st.session_state
 
-if 'file_loaded' not in st.session_state:
-    st.session_state['file_loaded'] = False
-if 'dataset' not in st.session_state:
-    st.session_state['dataset'] = False
-if 'target_name' not in st.session_state:
-    st.session_state['target_name'] = False
-if 'dataframe' not in st.session_state:
-    st.session_state['dataframe'] = False
+if 'file_upload' not in st.session_state:
+    st.session_state['file_upload'] = False
+if 'data' not in st.session_state:
+    st.session_state['data'] = False
 if 'model' not in st.session_state:
     st.session_state['model'] = False
 
-dataset_options = ('iris', 'penguins', 'diamonds', 'tips')
+# get files from sample_data folder
+dataset_options = sorted([file[:-4] for file in os.listdir('sample_data')])
 
 estimator_options = ('LogisticRegression', 
                     'RandomForestClassifier', 
@@ -98,85 +97,92 @@ home_placeholder = st.empty()
 show_home_page(home_placeholder)
 
 # clear home section when data is loaded
-if st.session_state['file_loaded']:
+if st.session_state['file_upload']:
     home_placeholder.empty()
 
 # Sidebar Settings
 st.sidebar.header('Settings')
 ## Select dataset
-#with st.sidebar.form(key='data_selection'):
 with st.sidebar.expander('Select a dataset'):
     choice = st.radio('Options:', options=('Sample data','Upload file'))
-    # Sample dataset
+
+    # Sample dataset choice
     if choice == 'Sample data':
-        st.session_state['dataset'] = st.selectbox('Select a sample dataframe:', options=dataset_options)
-        st.session_state['target_name'] = None
-    # Upload a file
+        # Select a dataset
+        sample_data = st.selectbox('Select a sample dataframe:', options=dataset_options)
+        # Read data and store information on session state
+        st.session_state['data'] = read_sample_data(sample_data)
+
+    # Upload a file choice
     elif choice == 'Upload file':
-        st.session_state['dataset'] = st.file_uploader(label='Or upload a csv file.', type='csv')
-        if st.session_state['dataset']:
-            st.session_state['dataset'] =  pd.read_csv(st.session_state['dataset'])
-            st.session_state['target_name'] = st.selectbox('Select target:', options=st.session_state['dataset'].columns)
-    
-    # # collapse form
-    # if st.form_submit_button('Load data'):
-    #     st.session_state['file_loaded'] = True
+        st.session_state['file_upload'] = st.file_uploader(label='Or upload a csv file.', type='csv')
+        # Run if file is uploaded
+        if st.session_state['file_upload']:
+            # Return dataframe and a list to choose target/id columns
+            df, column_selector = read_upload_file(st.session_state['file_upload'])
+            # Store dataframe information on session state
+            st.session_state['data']['df'] = df
 
-## Read dataset and display informations
-# if st.session_state['file_loaded']:
+## Options to show dataframe preview
+if st.sidebar.checkbox('Dataframe preview'):
+    st.subheader('Dataframe preview')
+    st.dataframe(st.session_state['data']['df'], height=195)
+    home_placeholder.empty()
 
-# Read dataframe information on session state
-st.session_state['dataframe'] = read_data(st.session_state['dataset'], st.session_state['target_name'])
+# Settings for Uploaded File
+if st.session_state['file_upload']:
 
-with st.sidebar.expander('Dataframe info'):
-    st.sidebar.markdown(f"Target: `{st.session_state['target_name']}`")
-# options to show df preview
-if st.sidebar.checkbox('Data preview'):
-    st.subheader('Data preview')
-    st.dataframe(st.session_state['dataframe']['processed_df'], height=195)
+    # target and features settings
+    settings = target_features_settings(column_selector)
+    st.session_state['data'].update(settings)
+
+    # split data into train/test
+    settings = test_train_split()
+    st.session_state['data'].update(settings)
+
+    # numeric data settings
+    settings = numerical_transformer()
+    st.session_state['data'].update(settings)
+
+    # categorical data settings
+    settings = categorical_transformer()
+    st.session_state['data'].update(settings)
+
+    # info summary
+    options_summary(**st.session_state['data'])
 
 
-## Select estimator
+# Select estimator
 estimator = st.sidebar.selectbox('Select your model', options=estimator_options)
-
-## Open sidebar with estimator params
+# Open sidebar with estimator params
 model_params = configure_estimator_params(eval(estimator))
 
-## Create model
-model = eval(estimator)(**model_params, random_state=42)
+# Create model
+# For uploaed file
+if st.session_state['file_upload']:
+    st.session_state['data'] = build_pipeline(estimator=eval(estimator), **st.session_state['data'])
+    model = st.session_state['data']['pipeline']
+# For sample data
+else:
+    model = eval(estimator)(**model_params, random_state=42)
 
-## Run Model
-if st.sidebar.button('Run model'):
-
-    if not st.session_state['file_loaded']:
+# Button to fit model
+with st.sidebar.form(key='run_model'):
+    submitted = st.form_submit_button('Run model')
+    if submitted:
+        # Run model
+        st.session_state['model'] = fit_model(model,
+                                                X=st.session_state['data']['X_train'], 
+                                                y=st.session_state['data']['y_train'])
+        # Clean homepage after model is fitted
         home_placeholder.empty()
-        st.error('## Please load any data before attempt to fit a model.')
-
-    try:
-        # start timerasas
-        start_time =  datetime.now()
-        # fit model
-        model.fit(
-                X=st.session_state['dataframe']['X_train'], 
-                y=st.session_state['dataframe']['y_train']
-        )
-        # calculate total time
-        end_time = datetime.now()
-        total_time = f'Time to fit: ' + str(end_time - start_time).split(".")[0]
-        st.session_state['model'] = model
-        st.sidebar.success(total_time) 
-
-    except NotFittedError:
-        not_fitted_error()
-    except (ValueError, TypeError, AttributeError) as error:
-        collapsed_expander_bug()
           
 # Display metrics
 if st.session_state['model']:
     
     try:
         st.subheader(f'{estimator} Metrics')
-        display_metrics(model, **st.session_state['dataframe'])
+        display_metrics(model, **st.session_state['data'])
 
     except NotFittedError:
         not_fitted_error()
